@@ -1,7 +1,8 @@
 fastapi
 uvicorn
 pydantic
-motor
+asyncpg
+sqlalchemy[asyncio]
 redis
 python-dotenv
 openai 

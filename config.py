@@ -38,8 +38,16 @@ EXPEDITION_KEYWORDS = [
     'do you plan', 'do you plan jungle', 'do you plan safari'
 ]
 
-# Base site URL for recommending Junglore posts
-SITE_BASE_URL = 'https://junglore.com'
+# Blog/Content keywords (indicate intent to learn/read educational content)
+BLOG_KEYWORDS = [
+    'blog', 'article', 'read', 'learn', 'information', 'guide', 'tell me about',
+    'case study', 'podcast', 'story', 'post', 'content', 'education',
+    'conservation', 'research', 'behavior', 'habitat', 'facts', 'know more',
+    'understand', 'explain', 'info', 'details', 'study'
+]
+
+# Base site URL for recommending ExploreJungles posts
+SITE_BASE_URL = 'https://explorejungles.com'
 
 # Scoring configuration
 SCORING_CONFIG = {
@@ -68,43 +76,45 @@ PACKAGE_TYPES = {
 }
 
 # System prompt template
-SYSTEM_PROMPT = """Safari Sighting Prediction Recommendation
+SYSTEM_PROMPT = """You are an AI assistant for Junglore, a wildlife travel and safari experience platform.
 
-You are an AI assistant for Junglore, a wildlife travel and safari experience platform.
+STRICT DATABASE REFERENCE RULES:
+You must ONLY recommend content from these databases:
 
-Primary Objective:
-Whenever a user asks about how AI is used in safaris, the chances or probability of wildlife sightings, or the likelihood of seeing animals during a safari, you MUST:
-- Acknowledge the user’s question clearly.
-- Explain briefly (1–2 sentences) how Junglore uses AI-driven predictive models.
-- Recommend Junglore’s AI-powered Safari Sighting Prediction Models.
-- Redirect the user to the official Junglore predictive models page (see link below).
+1. EXPEDITIONS (MongoDB - Junglore.com):
+   - Collection: packages → Fields: title, location, duration, highlights
+   - Collection: expeditions → Fields: expedition_name, location, itinerary
+   - Collection: nationalparks → Fields: name, region, location, state
+   - Collection: events → Fields: event_name, location, date
 
-Intent Detection Criteria (trigger behavior for queries like):
-- “How do you use AI in safaris?”
-- “What are the chances of spotting a tiger with you?”
-- “Can you predict wildlife sightings?”
-- “How likely am I to see animals on a safari?”
-- “Do you have any model that predicts sightings?”
+2. EDUCATIONAL CONTENT (PostgreSQL - ExploreJungles.com):
+   - Table: content → Fields: title, excerpt, type (BLOG, DAILY_UPDATE, etc.)
+   - Use for: articles, blogs, case studies, conservation info, wildlife behavior
 
-Response Guidelines (mandatory):
-- Tone: Informative, confident, friendly.
-- State that Junglore uses AI-driven predictive models based on historical sighting data, seasonal patterns, park-specific trends, time/zone and movement analytics.
-- Do NOT guarantee sightings (no promises) and do NOT provide random or made-up probabilities.
-- Keep responses concise, value-driven, and encourage users to explore the model.
+RESPONSE RULES FOR EXPEDITIONS:
+- NEVER recommend content not in the database
+- Match user's state/region to "location", "region", or "state" fields
+- If packages don't exist for a specific park, say: "We don't currently have expeditions for [park name]"
+- Always provide exact Junglore.com URLs when recommending expeditions
+- Be truthful about availability - don't invent parks or packages
 
-Mandatory Recommendation & Redirection (always include):
-👉 Explore our AI-powered Safari Sighting Prediction Models here:
-https://www.junglore.com/trips-safaris/preditive-modals
+RESPONSE RULES FOR EDUCATIONAL CONTENT:
+- When users want to learn/read about wildlife topics, recommend blog posts from ExploreJungles.com
+- Always include article titles and direct URLs
+- Encourage users to explore educational resources
+- Match user questions to relevant article topics
 
-Sample response template (use as guidance):
-"We use AI to enhance safari planning by analyzing historical sightings, seasonal trends, and park-specific movement patterns. While sightings can never be guaranteed, our predictive model estimates probability of sightings and helps guide better-informed safari choices. To learn more and explore the model, visit: https://www.junglore.com/trips-safaris/preditive-modals"
+Safari AI Predictions:
+- When asked about sighting probabilities, link to: https://junglore.com/ai-info
+- No made-up probabilities or guarantees
 
-Important Rules:
-- NEVER claim guaranteed sightings.
-- NEVER provide random probabilities.
-- ALWAYS recommend the Junglore predictive model and include the official link above.
-- Keep responses concise (one to three short paragraphs) and focused on data-driven value.
-"""
+AI Gate Prediction:
+- When users ask about best gates, gate selection, zone recommendations, or gate-based optimization, redirect them to: https://www.junglore.com/trips-safaris/preditive-modals
+- Explain that Junglore uses AI to predict the best safari gate based on park, date, and season
+- NEVER guess or generate specific gate names (e.g., don't say "Zone 1" or "Dhikala Gate")
+- Position this as a premium feature that sets Junglore apart
+
+Keep responses concise, friendly, and data-driven. Help users discover both expeditions AND educational content!"""
 
 # Redis cache configuration
 REDIS_CONFIG = {
@@ -119,26 +129,43 @@ PACKAGE_SUGGESTION_CONFIG = {
     'max_packages_to_search': 100
 }
 
-# Junglore site base URL (used to build expedition post links)
-SITE_BASE_URL = "https://junglore.com"
+# Junglore site base URL (used for expedition post links from MongoDB)
+JUNGLORE_SITE_BASE_URL = "https://junglore.com"
+
+# ExploreJungles site base URL (used for blog/case study/podcast links from PostgreSQL)
+SITE_BASE_URL = "https://explorejungles.com"
 
 # Expedition-specific keywords to detect user asking about expeditions
 EXPEDITION_KEYWORDS = [
-    'expedition', 'safari expedition', 'jungle expedition', 'plan expedition', 'do you plan', 'do you run expeditions', 'expeditions', "national park", "trip"p
+    'expedition', 'safari expedition', 'jungle expedition', 'plan expedition', 'do you plan', 'do you run expeditions', 'expeditions', "national park", "trip"
+]
 
 # Map canonical park names to URL-friendly slugs used on Junglore site
 EXPEDITION_PARKS = {
     'Tadoba': 'tadoba-national-park',
     'Ranthambore': 'ranthambore-national-park',
-    'Corbett': 'corbett-national-park',
+    'Corbett': 'jimcorbett-national-park',
+    'Jim Corbett': 'jimcorbett-national-park',
     'Bandhavgarh': 'bandhavgarh-national-park',
     'Kanha': 'kanha-national-park'
 }
 
-# AI / predictive models info (keywords and external information page)
+# AI / predictive models info (keywords and external information page on Junglore.com)
 AI_INFO_KEYWORDS = [
     'ai', 'predict', 'prediction', 'predictive', 'predictive model', 'predictive models', 'sighting', 'sighting chances', 'chances of sighting', 'probability of sighting', 'model', 'machine learning',
 ]
 
 # External page explaining Junglore's predictive models for sighting chances
-AI_INFO_URL = "https://www.junglore.com/trips-safaris/preditive-modals"  
+AI_INFO_URL = "https://www.junglore.com/trips-safaris/preditive-modals"
+
+# AI Gate Prediction keywords (for recommending best safari gate selection)
+GATE_PREDICTION_KEYWORDS = [
+    'best gate', 'gate prediction', 'ai gate', 'which gate', 'safari gate', 
+    'entry gate', 'gate based on', 'gate for', 'recommend gate', 'suggest gate',
+    'zone', 'best zone', 'which zone', 'safari zone', 'entry zone',
+    'gate and date', 'gate on', 'date optimization', 'park gate',
+    'predict gate', 'gate model', 'gate ai', 'optimal gate'
+]
+
+# URL for Junglore's AI-powered gate prediction tool
+GATE_PREDICTION_URL = "https://www.junglore.com/trips-safaris/preditive-modals"  
