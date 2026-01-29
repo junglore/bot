@@ -46,8 +46,9 @@ BLOG_KEYWORDS = [
     'understand', 'explain', 'info', 'details', 'study'
 ]
 
-# Base site URL for recommending ExploreJungles posts
+# Base site URLs
 SITE_BASE_URL = 'https://explorejungles.com'
+AI_INFO_URL = 'https://www.junglore.com/trips-safaris/predictive-models'
 
 # Scoring configuration
 SCORING_CONFIG = {
@@ -78,6 +79,18 @@ PACKAGE_TYPES = {
 # System prompt template
 SYSTEM_PROMPT = """You are an AI assistant for Junglore, a wildlife travel and safari experience platform.
 
+⚠️ CRITICAL CONTENT RECOMMENDATION POLICY:
+The system automatically checks the database for relevant content BEFORE you respond.
+If database content is found, the system will provide it directly - you will NOT see this.
+You ONLY respond when NO matching content exists in the database.
+
+⚠️ CRITICAL URL RULES:
+- NEVER create, generate, or invent ANY URLs
+- NEVER mention junglore.com or explorejungles.com URLs
+- URLs are ONLY provided by the system - NOT by you
+- If users ask about expeditions/blogs/predictions, provide information but NO URLs
+- The system adds URLs automatically
+
 STRICT DATABASE REFERENCE RULES:
 You must ONLY recommend content from these databases:
 
@@ -90,6 +103,13 @@ You must ONLY recommend content from these databases:
 2. EDUCATIONAL CONTENT (PostgreSQL - ExploreJungles.com):
    - Table: content → Fields: title, excerpt, type (BLOG, DAILY_UPDATE, etc.)
    - Use for: articles, blogs, case studies, conservation info, wildlife behavior
+   - SYSTEM CHECKS THIS FIRST: If relevant content exists, it's shown automatically
+
+🎯 CRITICAL WORKFLOW:
+1. System checks database FIRST for ALL content-related queries
+2. If content found → System responds with database content (you don't respond)
+3. If NO content found → You provide general information
+4. NEVER duplicate what the system already checked
 
 RESPONSE RULES FOR EXPEDITIONS:
 - NEVER recommend content not in the database
@@ -98,11 +118,11 @@ RESPONSE RULES FOR EXPEDITIONS:
 - Always provide exact Junglore.com URLs when recommending expeditions
 - Be truthful about availability - don't invent parks or packages
 
-RESPONSE RULES FOR EDUCATIONAL CONTENT:
-- When users want to learn/read about wildlife topics, recommend blog posts from ExploreJungles.com
-- Always include article titles and direct URLs
-- Encourage users to explore educational resources
-- Match user questions to relevant article topics
+RESPONSE RULES FOR GENERAL QUERIES:
+- You respond with general wildlife/nature information ONLY if database has no relevant content
+- Keep responses informative but concise
+- Don't invent specific case studies or articles - the system already checked
+- Focus on educational value and encourage exploration
 
 Safari AI Predictions:
 - When asked about sighting probabilities, link to: https://junglore.com/ai-info
@@ -114,7 +134,7 @@ AI Gate Prediction:
 - NEVER guess or generate specific gate names (e.g., don't say "Zone 1" or "Dhikala Gate")
 - Position this as a premium feature that sets Junglore apart
 
-Keep responses concise, friendly, and data-driven. Help users discover both expeditions AND educational content!"""
+Keep responses concise, friendly, and data-driven. Trust that the system has already checked for relevant database content!"""
 
 # Redis cache configuration
 REDIS_CONFIG = {
@@ -129,8 +149,15 @@ PACKAGE_SUGGESTION_CONFIG = {
     'max_packages_to_search': 100
 }
 
-# Junglore site base URL (used for expedition post links from MongoDB)
+# Junglore site base URLs
 JUNGLORE_SITE_BASE_URL = "https://junglore.com"
+
+# AI prediction/best time to visit URL (HARDCODED - never let GPT generate this)
+AI_PREDICTION_URL = "https://junglore.com/ai-info"
+
+# AI prediction/best time to visit URL (legacy)
+if 'AI_INFO_URL' not in locals():
+    AI_INFO_URL = "https://www.junglore.com/trips-safaris/predictive-models"
 
 # ExploreJungles site base URL (used for blog/case study/podcast links from PostgreSQL)
 SITE_BASE_URL = "https://explorejungles.com"
@@ -152,7 +179,10 @@ EXPEDITION_PARKS = {
 
 # AI / predictive models info (keywords and external information page on Junglore.com)
 AI_INFO_KEYWORDS = [
-    'ai', 'predict', 'prediction', 'predictive', 'predictive model', 'predictive models', 'sighting', 'sighting chances', 'chances of sighting', 'probability of sighting', 'model', 'machine learning',
+    'ai', 'predict', 'prediction', 'predictive', 'predictive model', 'predictive models', 
+    'sighting', 'sighting chances', 'chances of sighting', 'probability of sighting', 
+    'model', 'machine learning', 'best time to visit', 'when to visit', 'best season',
+    'best month', 'when should i visit', 'what time', 'timing'
 ]
 
 # External page explaining Junglore's predictive models for sighting chances

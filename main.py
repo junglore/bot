@@ -16,7 +16,7 @@ import re
 from models import Base, User, ChatbotSession as DBSession, Package
 from config import (
     TRAVEL_KEYWORDS, WILDLIFE_KEYWORDS, LOCATION_KEYWORDS, DURATION_KEYWORDS,
-    BUDGET_KEYWORDS, EXPEDITION_KEYWORDS, BLOG_KEYWORDS, EXPEDITION_PARKS, AI_INFO_KEYWORDS, AI_INFO_URL, SCORING_CONFIG, BUDGET_THRESHOLDS, PACKAGE_TYPES,
+    BUDGET_KEYWORDS, EXPEDITION_KEYWORDS, BLOG_KEYWORDS, EXPEDITION_PARKS, AI_INFO_KEYWORDS, AI_INFO_URL, AI_PREDICTION_URL, SCORING_CONFIG, BUDGET_THRESHOLDS, PACKAGE_TYPES,
     SYSTEM_PROMPT, REDIS_CONFIG, PACKAGE_SUGGESTION_CONFIG, SITE_BASE_URL, JUNGLORE_SITE_BASE_URL, GATE_PREDICTION_KEYWORDS, GATE_PREDICTION_URL
 )
 
@@ -96,6 +96,46 @@ class UserResponse(BaseModel):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+# Database connection health check
+@app.get("/health/db")
+async def health_db():
+    health_status = {
+        "mongodb": "unknown",
+        "postgresql": "unknown",
+        "redis": "unknown"
+    }
+    
+    # Check MongoDB
+    try:
+        if mongo_db is not None:
+            await mongo_db.command("ping")
+            # Try to count packages
+            count = await mongo_db.packages.count_documents({})
+            health_status["mongodb"] = f"connected ({count} packages)"
+        else:
+            health_status["mongodb"] = "connection is None"
+    except Exception as e:
+        health_status["mongodb"] = f"error: {str(e)}"
+    
+    # Check PostgreSQL
+    try:
+        async with AsyncSessionLocal() as session:
+            from sqlalchemy import text
+            result = await session.execute(text("SELECT COUNT(*) FROM content"))
+            count = result.scalar()
+            health_status["postgresql"] = f"connected ({count} content items)"
+    except Exception as e:
+        health_status["postgresql"] = f"error: {str(e)}"
+    
+    # Check Redis
+    try:
+        await redis_client.ping()
+        health_status["redis"] = "connected"
+    except Exception as e:
+        health_status["redis"] = f"error: {str(e)}"
+    
+    return health_status
 
 # Create a new user
 @app.post("/users/", response_model=UserResponse)
@@ -306,7 +346,8 @@ async def find_relevant_package(user_message, db_session: AsyncSession):
     
     try:
         # Get all active expedition packages from MongoDB
-        packages = await mongo_db.packages.find({"status": True}).to_list(PACKAGE_SUGGESTION_CONFIG['max_packages_to_search'])
+        cursor = mongo_db.packages.find({"status": True})
+        packages = await cursor.to_list(length=PACKAGE_SUGGESTION_CONFIG['max_packages_to_search'])
         
         if not packages:
             return None
@@ -334,23 +375,41 @@ def _slugify(text: str) -> str:
 async def find_expedition_packages(location: Optional[str] = None, max_results: int = 100):
     """Return expedition packages from Junglore.com MongoDB (Expeditions)"""
     if mongo_db is None:
-        print("MongoDB connection is None - cannot fetch packages")
+        print("❌ ERROR: MongoDB connection is None - cannot fetch packages")
+        print("   Check your MONGODB_URI in .env file")
         return []
     
     try:
-        query = {"status": True, "type": {"$regex": "expedition", "$options": "i"}}
+        print(f"\n🔍 QUERYING MONGODB for expeditions (location filter: {location})...")
+        
+        # Try lenient query first - just get expedition type packages
+        query = {"type": {"$regex": "expedition", "$options": "i"}}
+        
+        # Add location filter if provided
         if location:
             query["$or"] = [
                 {"region": {"$regex": location, "$options": "i"}},
                 {"heading": {"$regex": location, "$options": "i"}},
-                {"title": {"$regex": location, "$options": "i"}}
+                {"title": {"$regex": location, "$options": "i"}},
+                {"slug": {"$regex": location, "$options": "i"}}
             ]
         
         packages = await mongo_db.packages.find(query).to_list(max_results)
-        print(f"Found {len(packages)} packages in MongoDB with query: {query}")
+        print(f"✅ Found {len(packages)} packages in MongoDB")
+        
+        if len(packages) == 0:
+            print("⚠️  WARNING: Zero packages returned from MongoDB!")
+            print(f"   Query used: {query}")
+            print("   This suggests:")
+            print("   1. No packages exist in 'packages' collection")
+            print("   2. Wrong database connected (check MONGODB_URI)")
+            print("   3. Field 'type' doesn't contain 'expedition' in any package")
+        
         return packages
     except Exception as e:
-        print(f"Error fetching expeditions from MongoDB: {e}")
+        print(f"❌ ERROR fetching expeditions from MongoDB: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 
@@ -369,14 +428,35 @@ async def extract_park_names_from_packages(packages):
     return sorted(list(park_names))
 
 
-async def find_blog_content(topic: Optional[str] = None, max_results: int = 10):
+def calculate_relevance_score(article_title: str, article_excerpt: str, search_keywords: list) -> int:
+    """
+    Calculate relevance score for an article based on keyword matches.
+    Higher score = more relevant.
+    """
+    score = 0
+    title_lower = article_title.lower()
+    excerpt_lower = article_excerpt.lower()
+    
+    for keyword in search_keywords:
+        keyword_lower = keyword.lower()
+        # Title matches are worth more
+        if keyword_lower in title_lower:
+            score += 10
+        # Excerpt matches are worth less
+        if keyword_lower in excerpt_lower:
+            score += 3
+    
+    return score
+
+
+async def find_blog_content(topic: Optional[str] = None, max_results: int = 10, keywords: list = None):
     """
     Retrieve blog/educational content from PostgreSQL (ExploreJungles.com).
-    Supports optional topic filtering.
-    Returns list of blog posts with details.
+    Supports optional topic filtering and relevance scoring.
+    Returns list of blog posts with details, sorted by relevance.
     """
     try:
-        print(f"Querying PostgreSQL for blog content with topic: {topic}")
+        print(f"\n🔍 QUERYING POSTGRESQL for blog content (topic: {topic}, keywords: {keywords})...")
         
         from sqlalchemy import text
         async with AsyncSessionLocal() as session:
@@ -396,7 +476,7 @@ async def find_blog_content(topic: Optional[str] = None, max_results: int = 10):
                     ORDER BY published_at DESC NULLS LAST
                     LIMIT :limit
                 """)
-                result = await session.execute(query, {"topic": f"%{topic.lower()}%", "limit": max_results})
+                result = await session.execute(query, {"topic": f"%{topic.lower()}%", "limit": max_results * 2})  # Get more for scoring
             else:
                 # Get recent content if no topic specified
                 query = text("""
@@ -410,12 +490,20 @@ async def find_blog_content(topic: Optional[str] = None, max_results: int = 10):
                 result = await session.execute(query, {"limit": max_results})
             
             rows = result.fetchall()
-            print(f"Retrieved {len(rows)} blog posts from database")
+            print(f"✅ Retrieved {len(rows)} blog posts from database")
             
-            # Format results
+            if len(rows) == 0:
+                print("⚠️  WARNING: Zero blog posts returned from PostgreSQL!")
+                print(f"   Search topic: {topic}")
+                print("   This suggests:")
+                print("   1. No published content in 'content' table")
+                print("   2. Search topic doesn't match any articles")
+                print("   3. Database connection issue")
+            
+            # Format results with relevance scoring
             formatted_content = []
             for row in rows:
-                formatted_content.append({
+                article = {
                     "id": str(row[0]),
                     "title": row[1],
                     "slug": row[2],
@@ -424,10 +512,31 @@ async def find_blog_content(topic: Optional[str] = None, max_results: int = 10):
                     "image": row[5] or "",
                     "type": row[6],
                     "views": row[7] or 0,
-                    "url": f"{SITE_BASE_URL}/blog/{row[2]}"  # explorejungles.com blog URL
-                })
+                    "url": f"{SITE_BASE_URL}/blog/{row[2]}",  # explorejungles.com blog URL
+                    "relevance_score": 0
+                }
+                
+                # Calculate relevance if keywords provided
+                if keywords:
+                    article["relevance_score"] = calculate_relevance_score(
+                        article["title"], 
+                        article["excerpt"], 
+                        keywords
+                    )
+                
+                formatted_content.append(article)
             
-            return formatted_content
+            # If keywords provided, filter and sort by relevance
+            if keywords:
+                # Filter out low relevance (score < 3 means only weak matches)
+                formatted_content = [a for a in formatted_content if a["relevance_score"] >= 3]
+                # Sort by relevance score (highest first)
+                formatted_content.sort(key=lambda x: x["relevance_score"], reverse=True)
+                print(f"   Filtered to {len(formatted_content)} relevant posts (min score: 3)")
+                if formatted_content:
+                    print(f"   Top result: '{formatted_content[0]['title']}' (score: {formatted_content[0]['relevance_score']})")
+            
+            return formatted_content[:max_results]
             
     except Exception as e:
         print(f"Error querying PostgreSQL content: {e}")
@@ -436,30 +545,55 @@ async def find_blog_content(topic: Optional[str] = None, max_results: int = 10):
         return []
 
 
-async def match_blog_content(user_message: str) -> dict:
+async def match_content_in_database(user_message: str) -> dict:
     """
-    Analyze user message and match against blog/educational content.
-    Returns matched blog posts.
+    Analyze user message and match against ALL available content in database.
+    Checks blog/educational content first before providing general information.
+    Returns matched content from database.
     """
     try:
         # Extract topic keywords from user query
         user_lower = user_message.lower()
         
         # Define stop words
-        stop_words = ['tell', 'me', 'about', 'the', 'a', 'an', 'in', 'blog', 'article', 'read', 'learn', 'want', 'to', 'know']
+        stop_words = ['tell', 'me', 'about', 'the', 'a', 'an', 'in', 'blog', 'article', 'read', 'learn', 'want', 'to', 'know', 'case', 'study', 'what', 'why', 'how', 'is', 'are', 'was', 'were', 'can', 'could', 'would', 'should']
         
         # Extract meaningful keywords
         words = user_lower.split()
         keywords = [w for w in words if w not in stop_words and len(w) > 2]
         
-        # Use keywords as search topic
-        search_topic = ' '.join(keywords[:3]) if keywords else None  # Limit to first 3 keywords
+        print(f"\n🔍 CONTENT MATCHING - Extracted keywords: {keywords}")
         
-        print(f"Searching blogs for keywords: {keywords}")
-        print(f"Combined search topic: {search_topic}")
+        # Try searching with most important keywords first
+        blog_posts = []
+        search_topic = None
         
-        # Query blog content
-        blog_posts = await find_blog_content(topic=search_topic, max_results=5)
+        if keywords:
+            # Try individual keywords starting with the most important ones
+            for keyword in keywords[:3]:  # Try first 3 keywords
+                search_topic = keyword
+                print(f"   Searching database with keyword: '{search_topic}'")
+                blog_posts = await find_blog_content(topic=search_topic, max_results=5, keywords=keywords)
+                if blog_posts:
+                    print(f"   ✅ Found {len(blog_posts)} posts with keyword: '{search_topic}'")
+                    break
+            
+            # If no results with individual keywords, try combined search
+            if not blog_posts and len(keywords) > 1:
+                search_topic = ' '.join(keywords[:2])
+                print(f"   Trying combined search: '{search_topic}'")
+                blog_posts = await find_blog_content(topic=search_topic, max_results=5, keywords=keywords)
+                
+            # If still no results, try with all keywords combined
+            if not blog_posts and len(keywords) > 2:
+                search_topic = ' '.join(keywords)
+                print(f"   Trying full search: '{search_topic}'")
+                blog_posts = await find_blog_content(topic=search_topic, max_results=5, keywords=keywords)
+        
+        if blog_posts:
+            print(f"   ✅ CONTENT MATCH SUCCESS: Found {len(blog_posts)} relevant posts")
+        else:
+            print(f"   ❌ No matching content found in database")
         
         return {
             "matched": len(blog_posts) > 0,
@@ -468,7 +602,7 @@ async def match_blog_content(user_message: str) -> dict:
         }
         
     except Exception as e:
-        print(f"Error in match_blog_content: {e}")
+        print(f"Error in match_content_in_database: {e}")
         import traceback
         traceback.print_exc()
         return {
@@ -488,13 +622,15 @@ async def match_user_query_to_database(user_message: str) -> dict:
     
     try:
         # Get ALL available expedition packages from database
-        print(f"Querying MongoDB for all expeditions...")
+        print(f"\n🔍 MATCHING user query to database...")
+        print(f"   User message: {user_message}")
         all_packages = await find_expedition_packages(location=None)
-        print(f"Retrieved {len(all_packages)} total packages from database")
+        print(f"   Retrieved {len(all_packages)} total packages from database")
         
         if not all_packages:
-            print("WARNING: No packages found in database")
-            return {'matched': False, 'park_name': None, 'packages': []}
+            print("⚠️  WARNING: No packages found in database")
+            print("   Returning NO MATCH result")
+            return {'matched': False, 'park_name': None, 'packages': [], 'available_parks': []}
         
         # Extract park names from packages for display
         available_parks = await extract_park_names_from_packages(all_packages)
@@ -736,28 +872,82 @@ async def send_message(session_id: str, req: SendMessageRequest, db: AsyncSessio
             park_name = match_result['park_name']
             packages = match_result['packages']
             
-            # Build recommendation with URLs
-            package_info = []
-            for pkg in packages[:3]:  # Show top 3
-                title = pkg.get('title') or pkg.get('heading', '')
-                url = construct_post_url(pkg)
-                package_info.append(f"• {title}: {url}")
+            # Extract month/timing if mentioned in query
+            message_lower = req.message.lower()
+            months = ['january', 'february', 'march', 'april', 'may', 'june', 
+                     'july', 'august', 'september', 'october', 'november', 'december',
+                     'jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+            time_mentioned = None
+            for month in months:
+                if month in message_lower:
+                    time_mentioned = month.title()
+                    break
             
-            bot_reply = f"Great! We have expeditions to {park_name}:\n\n" + "\n".join(package_info)
+            # Build conversational response with package details
+            if time_mentioned:
+                bot_reply = f"Yes! We have expeditions planned for {time_mentioned} to {park_name}. 🌿\n\n"
+            else:
+                bot_reply = f"Yes! We have exciting expeditions to {park_name}. 🌿\n\n"
+            
+            # Add detailed package info for top match
+            top_package = packages[0]
+            title = top_package.get('title') or top_package.get('heading', '')
+            duration = top_package.get('duration', '')
+            description = top_package.get('description', '')
+            url = construct_post_url(top_package)
+            image = top_package.get('image', '')
+            
+            bot_reply += f"**{title}**\n"
+            if duration:
+                bot_reply += f"📅 Duration: {duration}\n"
+            if description:
+                # Truncate description to 150 chars
+                short_desc = description[:150] + "..." if len(description) > 150 else description
+                bot_reply += f"\n{short_desc}\n"
+            
+            bot_reply += f"\n🔗 **View detailed itinerary and book:** {url}\n"
+            
+            # Add more packages if available
+            if len(packages) > 1:
+                bot_reply += f"\n**Other {park_name} expeditions:**\n"
+                for pkg in packages[1:3]:  # Show 2 more
+                    pkg_title = pkg.get('title') or pkg.get('heading', '')
+                    pkg_url = construct_post_url(pkg)
+                    bot_reply += f"• {pkg_title}: {pkg_url}\n"
+            
+            bot_reply += "\n💡 *Each expedition includes expert guides, comfortable accommodations, and curated wildlife experiences!*"
+            
+            # Prepare response with image
+            response_data = {"reply": bot_reply}
+            if image:
+                response_data["banner_image"] = image
+            if packages:
+                # Include package details for frontend
+                response_data["expedition_package"] = {
+                    "title": title,
+                    "image": image,
+                    "duration": duration,
+                    "description": description[:200] if description else "",
+                    "url": url,
+                    "park": park_name
+                }
             
         elif match_result['park_name'] and not match_result['packages']:
             # Park mentioned but no packages found
             park_name = match_result['park_name']
             bot_reply = f"We don't currently have expeditions for {park_name}. Would you like to explore other parks?"
+            response_data = {"reply": bot_reply}
             
         elif 'available_parks' in match_result and match_result['available_parks']:
             # No specific park - list all available parks
             parks = match_result['available_parks'][:10]
             bot_reply = "Yes — we offer jungle safari expeditions in: " + ", ".join(parks) + ". Which one are you interested in?"
+            response_data = {"reply": bot_reply}
             
         else:
             # No packages in database at all
             bot_reply = "We're currently setting up our expedition packages. Please check back soon!"
+            response_data = {"reply": bot_reply}
         
         # Save user and bot messages
         new_history = (history + [
@@ -767,19 +957,35 @@ async def send_message(session_id: str, req: SendMessageRequest, db: AsyncSessio
         # Update database and cache
         await update_session_history(session_id, new_history, db)
         
-        return {"reply": bot_reply}
+        return response_data
     
-    # Handle blog/content queries - recommend educational articles
-    if blog_intent:
-        print(f"Blog intent detected in message: {req.message}")
-        blog_result = await match_blog_content(req.message)
+    # ALWAYS check database for relevant content FIRST (unless it's already handled above)
+    print(f"\n📊 CHECKING DATABASE for relevant content...")
+    content_result = await match_content_in_database(req.message)
+    
+    if content_result['matched'] and content_result['posts']:
+        # Found relevant content in database - recommend it FIRST
+        posts = content_result['posts']
+        print(f"✅ Found {len(posts)} relevant posts - recommending database content")
         
-        if blog_result['matched'] and blog_result['posts']:
-            # Found relevant blog posts
-            posts = blog_result['posts']
+        # Build recommendation with URLs
+        bot_reply = "I found some great resources on this topic:\n\n"
+        
+        # Include featured article with image if available
+        top_post = posts[0]
+        if top_post.get('image'):
+            bot_reply += f"**Featured:** {top_post['title']}\n"
+            if top_post.get('excerpt'):
+                bot_reply += f"{top_post['excerpt'][:150]}...\n\n"
+            bot_reply += f"🔗 Read more: {top_post['url']}\n\n"
             
-            # Build recommendation with URLs
-            bot_reply = "Here are some articles you might find interesting:\n\n"
+            # Add other articles
+            if len(posts) > 1:
+                bot_reply += "**More articles:**\n"
+                for post in posts[1:5]:  # Show next 4
+                    bot_reply += f"📖 {post['title']}: {post['url']}\n"
+        else:
+            # No images available, show list format
             for post in posts[:5]:  # Show top 5
                 title = post['title']
                 url = post['url']
@@ -788,12 +994,40 @@ async def send_message(session_id: str, req: SendMessageRequest, db: AsyncSessio
                 if excerpt:
                     bot_reply += f"   {excerpt}...\n"
                 bot_reply += f"   Read more: {url}\n\n"
-            
-            bot_reply += "Explore more educational content on ExploreJungles.com! 🌿"
-            
-        else:
-            # No blog posts found - general response
-            bot_reply = "We have many educational articles about wildlife, conservation, and jungle ecosystems on ExploreJungles.com. Could you specify what topic you'd like to learn about?"
+        
+        bot_reply += "Explore more educational content on ExploreJungles.com! 🌿"
+        
+        # Prepare response with image if available
+        response_data = {"reply": bot_reply}
+        if posts and posts[0].get('image'):
+            response_data["featured_image"] = posts[0]['image']
+            response_data["featured_article"] = {
+                "title": posts[0]['title'],
+                "excerpt": posts[0].get('excerpt', '')[:200],
+                "url": posts[0]['url'],
+                "image": posts[0]['image']
+            }
+        
+        # Save user and bot messages
+        new_history = (history + [
+            {"sender": "user", "text": req.message},
+            {"sender": "bot", "text": bot_reply}
+        ])[-10:]
+        # Update database and cache
+        await update_session_history(session_id, new_history, db)
+        
+        return response_data
+    else:
+        print(f"❌ No content found in database - proceeding with AI response")
+    
+    # Handle AI prediction queries - hardcoded URL (never let GPT generate)
+    if intent_info.get('ai_intent', False):
+        print(f"AI prediction intent detected in message: {req.message}")
+        
+        bot_reply = (
+            f"For information on sighting probabilities and AI-based predictions, visit: {AI_PREDICTION_URL}\n\n"
+            f"This page provides detailed insights into wildlife sighting predictions powered by AI technology."
+        )
         
         # Save user and bot messages
         new_history = (history + [

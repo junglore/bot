@@ -6,3 +6,4 @@ sqlalchemy[asyncio]
 redis
 python-dotenv
 openai 
+psycopg2-binary

@@ -9,8 +9,9 @@ This is a Python backend for the Junglore chatbot, providing wildlife and jungle
 - Redis for fast session/context caching
 - GPT-4o-mini integration for conversational flow
 - RESTful API (testable via Postman)
-- Expedition recommendations: when a user asks about planning a jungle safari expedition, the assistant replies affirmatively, lists the national parks where Junglore runs expeditions, and if the user selects a park (e.g., "Tadoba National Park"), the assistant recommends the corresponding expedition post on Junglore.com with a direct link.
-- Expedition recommendations: if a user asks about planning a "jungle safari expedition", the assistant will reply confirming expeditions are available and list national parks we offer. When the user selects a park (for example, "Tadoba National Park"), the assistant will recommend the relevant expedition post on Junglore with a link.
+- **Smart Content Recommendation**: The bot intelligently checks the database FIRST for any relevant content (blogs, case studies, articles) before providing general information. If content exists on the website related to the user's query, it will be recommended with direct links.
+- **Expedition recommendations**: When users ask about planning jungle safari expeditions, the assistant lists available national parks and recommends specific expedition posts on Junglore.com with direct links when a park is selected.
+- **Database-first approach**: All content queries are matched against the PostgreSQL database (ExploreJungles.com) and MongoDB (Junglore.com) before the AI generates general responses, ensuring users get existing website content whenever available.
 
 ## Setup
 1. **Create and activate a virtual environment:**
@@ -31,6 +32,12 @@ This is a Python backend for the Junglore chatbot, providing wildlife and jungle
 ## API Endpoints
 - `POST /sessions/` — Start a new chat session
 - `POST /sessions/{session_id}/message` — Send a message to a session, get bot reply
+  - Response may include:
+    - `reply`: Text response from bot
+    - `banner_image`: Featured image URL (for expeditions)
+    - `expedition_package`: Expedition details with image, duration, description, URL
+    - `featured_image`: Article image URL (for educational content)
+    - `featured_article`: Article details with image, excerpt, URL
 - `GET /sessions/` — List all sessions for a user
 - `GET /sessions/{session_id}/history` — Get chat history for a session
 
